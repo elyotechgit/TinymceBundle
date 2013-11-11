@@ -18,6 +18,14 @@ class StfalconTinymceExtension extends \Twig_Extension
     protected $container;
 
     /**
+     * Asset Base Url
+     * Used to over ride the asset base url (to not use CDN for instance)
+     *
+     * @var String
+     */
+    protected $baseUrl;
+
+    /**
      * Initialize tinymce helper
      *
      * @param ContainerInterface $container
@@ -59,7 +67,7 @@ class StfalconTinymceExtension extends \Twig_Extension
     public function getFunctions()
     {
         return array(
-            'tinymce_init' => new \Twig_Function_Method($this, 'tinymce_init', array('is_safe' => array('html')))
+            'tinymce_init' => new \Twig_Function_Method($this, 'tinymceInit', array('is_safe' => array('html')))
         );
     }
 
@@ -68,25 +76,29 @@ class StfalconTinymceExtension extends \Twig_Extension
      *
      * @return string
      */
-    public function tinymce_init()
+    public function tinymceInit()
     {
-
         $config = $this->getParameter('stfalcon_tinymce.config');
-        $baseURL = (!isset($config['base_url']) ? null : $config['base_url']);
 
+        $this->baseUrl = (!isset($config['base_url']) ? null : $config['base_url']);
         /** @var $assets \Symfony\Component\Templating\Helper\CoreAssetsHelper */
         $assets = $this->getService('templating.helper.assets');
 
         // Get path to tinymce script for the jQuery version of the editor
-        $config['jquery_script_url'] = $assets->getUrl($baseURL.'bundles/stfalcontinymce/vendor/tiny_mce/tiny_mce.jquery.js');
+        if ($config['tinymce_jquery']) {
+            $config['jquery_script_url'] = $assets->getUrl(
+                $this->baseUrl . 'bundles/stfalcontinymce/vendor/tinymce/tinymce.jquery.min.js'
+            );
+        }
 
         // Get local button's image
         foreach ($config['tinymce_buttons'] as &$customButton) {
-            $imageUrl = $customButton['image'];
-            $url      = preg_replace('/^asset\[(.+)\]$/i', '$1', $imageUrl);
-            if ($imageUrl !== $url) {
-                $customButton['image'] = $assets->getUrl($url);
-            }
+            $customButton['image'] = $this->getAssetsUrl($customButton['image']);
+        }
+
+        // Update URL to external plugins
+        foreach ($config['external_plugins'] as &$extPlugin) {
+            $extPlugin['url'] = $this->getAssetsUrl($extPlugin['url']);
         }
 
         // If the language is not set in the config...
@@ -95,21 +107,43 @@ class StfalconTinymceExtension extends \Twig_Extension
             $config['language'] = $this->getService('request')->getLocale();
         }
 
-        // Check the language code and trim it to 2 symbols (en_US to en, ru_RU to ru, ...)
-        if (strlen($config['language']) > 2) {
-            $config['language'] = substr($config['language'], 0, 2);
+        $langDirectory = __DIR__ . '/../../Resources/public/vendor/tinymce/langs/';
+
+        // A language code coming from the locale may not match an existing language file
+        if (!file_exists($langDirectory . $config['language'] . '.js')) {
+            // Try shortening the code
+            if (strlen($config['language']) > 2) {
+                $shortCode = substr($config['language'], 0, 2);
+
+                if (file_exists($langDirectory . $shortCode . '.js')) {
+                    $config['language'] = $shortCode;
+                } else {
+                    unset($config['language']);
+                }
+            } else {
+                // Try expanding the code
+                $longCode = $config['language'] . '_' . strtoupper($config['language']);
+
+                if (file_exists($langDirectory . $longCode . '.js')) {
+                    $config['language'] = $longCode;
+                } else {
+                    unset($config['language']);
+                }
+            }
         }
 
-        // TinyMCE does not allow to set different languages to each instance
-        foreach ($config['theme'] as $themeName => $themeOptions) {
-            $config['theme'][$themeName]['language'] = $config['language'];
+        if (isset($config['language']) && $config['language']) {
+            // TinyMCE does not allow to set different languages to each instance
+            foreach ($config['theme'] as $themeName => $themeOptions) {
+                $config['theme'][$themeName]['language'] = $config['language'];
+            }
         }
 
         return $this->getService('templating')->render('StfalconTinymceBundle:Script:init.html.twig', array(
-            'tinymce_config' => json_encode($config),
+            'tinymce_config' => preg_replace('/"file_browser_callback":"([^"]+)"\s*/', 'file_browser_callback:$1', json_encode($config)),
             'include_jquery' => $config['include_jquery'],
             'tinymce_jquery' => $config['tinymce_jquery'],
-            'base_url'       => $baseURL
+            'base_url'       => $this->baseUrl
         ));
     }
 
@@ -122,4 +156,27 @@ class StfalconTinymceExtension extends \Twig_Extension
     {
         return 'stfalcon_tinymce';
     }
+
+
+    /**
+     * Get url from config string
+     *
+     * @param string $inputUrl
+     *
+     * @return string
+     */
+    protected function getAssetsUrl($inputUrl)
+    {
+        /** @var $assets \Symfony\Component\Templating\Helper\CoreAssetsHelper */
+        $assets = $this->getService('templating.helper.assets');
+
+        $url = preg_replace('/^asset\[(.+)\]$/i', '$1', $inputUrl);
+
+        if ($inputUrl !== $url) {
+            return $assets->getUrl($this->baseUrl . $url);
+        }
+
+        return $inputUrl;
+    }
 }
+
